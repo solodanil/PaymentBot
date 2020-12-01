@@ -1,0 +1,1 @@
+path = 'C:/Users/ыва/PycharmProjects/PaymentBot'
