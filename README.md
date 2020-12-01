@@ -1,0 +1,2 @@
+# PaymentBot
+Bot for kdesigner
