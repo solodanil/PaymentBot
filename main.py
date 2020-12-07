@@ -2,7 +2,8 @@ import telebot
 from telebot.types import LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup, \
     ReplyKeyboardMarkup, ReplyKeyboardRemove
 import os
-from config import path
+import shutil
+from config import path, admins
 
 token = '1446058419:AAEREFM72wBh-EtNSLNaHIejmoq2jXtPKHY'
 provider_token = '390540012:LIVE:13591'  # @BotFather -> Bot Settings -> Payments
@@ -21,25 +22,34 @@ main_kb = InlineKeyboardMarkup()
 main_kb.add(InlineKeyboardButton(text='Последние фотографии', callback_data='recent'))
 main_kb.add(InlineKeyboardButton(text='Темы', callback_data='themes'))
 
+
 done_kb = ReplyKeyboardMarkup(one_time_keyboard=True)
 done_kb.row('Готово')
 
 
 def get_themes_keyboard(is_admin):
+    res = []
     keyboard = InlineKeyboardMarkup()
     for theme in os.listdir(path):
         if theme not in ('.idea', 'main.py', 'config.py', '__pycache__', 'README.md', '.git'):
-            keyboard.add(InlineKeyboardButton(text=theme, callback_data=theme))
+            res.append(theme)
+    res.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    for theme in res:
+        keyboard.add(InlineKeyboardButton(text=theme, callback_data=theme))
     if is_admin:
         keyboard.add(InlineKeyboardButton(text='➕Новая тема', callback_data=f'n_theme'))
     return keyboard
 
 
 def get_subthemes_keyboard(theme, is_admin):
+    res = []
     keyboard = InlineKeyboardMarkup()
-    for theme in os.listdir(f'{path}/{theme}'):
-        if theme not in ('.idea', 'main.py'):
-            keyboard.add(InlineKeyboardButton(text=theme, callback_data=theme))
+    for subtheme in os.listdir(f'{path}/{theme}'):
+        if subtheme not in ('.idea', 'main.py'):
+            res.append(subtheme)
+    res.sort(key=lambda x: os.path.getmtime(f'{theme}/{x}/cover.jpg'), reverse=True)
+    for theme in res:
+        keyboard.add(InlineKeyboardButton(text=theme, callback_data=theme))
     if is_admin:
         keyboard.add(InlineKeyboardButton(text='➕Новая подтема', callback_data=f'n_subtheme'))
     return keyboard
@@ -66,11 +76,16 @@ def command_start(message):
 
 
 @bot.message_handler(commands=['buy'])
-def command_pay(chat_id, user):
-    with open(path + user + '/cover.jpg', 'rb') as f:
-        bot.send_photo(chat_id, f)
-    with open(path + user + '/description.txt', 'r', encoding='windows-1251') as f:
+def command_pay(chat_id, user, is_admin=False):
+    with open(path + user + '/description.txt', 'r', encoding='utf-8') as f:
         desc = '\n'.join(f.readlines())
+    if is_admin:
+        invoice_kb = InlineKeyboardMarkup()
+        invoice_kb.add(InlineKeyboardButton(text='Удалить', callback_data=f'del{user}'))
+    else:
+        invoice_kb = None
+    with open(path + user + '/cover.jpg', 'rb') as f:
+        bot.send_photo(chat_id, f, reply_markup=invoice_kb)
     bot.send_invoice(chat_id, title=user,
                      description=desc,
                      provider_token=provider_token,
@@ -112,29 +127,46 @@ def got_payment(message):
 def callback_query(call):
     global admin_mode
     if call.data == 'themes':
-        bot.send_message(call.message.chat.id, 'Выбор темы', reply_markup=get_themes_keyboard(True))
+        try:
+            bot.send_message(call.message.chat.id, 'Выбор темы',
+                             reply_markup=get_themes_keyboard(call.message.chat.id in admins))
+        except Exception as ex:
+            bot.send_message(300208456, f'@{call.from_user.username}: {type(ex)} {ex.args}')
     elif call.data == 'recent':
-        send_recents(call.message.chat.id)
+        try:
+            send_recents(call.message.chat.id)
+        except Exception as ex:
+            bot.send_message(300208456, f'@{call.from_user.username}: {type(ex)} {ex.args}')
     elif call.data == 'n_theme':
         admin_mode = 1
         bot.send_message(call.message.chat.id, 'Введите название темы')
     elif call.data == 'n_subtheme':
         admin_mode = 2
         bot.send_message(call.message.chat.id, 'Введите название подтемы')
+    elif call.data.startswith('del'):
+        shutil.rmtree(f'{path}/{call.data.replace("del", "")}')
+        bot.send_message(call.message.chat.id, 'Архив удален')
     elif call.data in os.listdir(path):
-        bot.send_message(call.message.chat.id, 'Выбор подтемы',
-                         reply_markup=get_subthemes_keyboard(call.data, True))
-        users[call.from_user.id] = call.data
+        try:
+            bot.send_message(call.message.chat.id, 'Выбор подтемы',
+                             reply_markup=get_subthemes_keyboard(call.data, call.message.chat.id in admins))
+            users[call.from_user.id] = call.data
+        except Exception as ex:
+            bot.send_message(300208456, f'@{call.from_user.username}: {type(ex)} {ex.args}')
     else:
-        if call.from_user.id in users:
-            users[call.from_user.id] = f'{users[call.from_user.id]}/{call.data}'
-            command_pay(call.message.chat.id, users[call.from_user.id])
+        try:
+            if call.from_user.id in users:
+                users[call.from_user.id] = f'{users[call.from_user.id]}/{call.data}'
+                command_pay(call.message.chat.id, users[call.from_user.id], call.message.chat.id in admins)
+                users.pop(call.from_user.id)
+        except Exception as ex:
+            bot.send_message(300208456, f'@{call.from_user.username}: {type(ex)} {ex.args}')
 
 
 @bot.message_handler(content_types=['text'])
 def msg_handler(call):
     global admin_mode
-    if call.from_user.id in (300208456,):
+    if call.from_user.id in admins:
         if admin_mode == 1:
             os.mkdir(call.text)
             admin_mode = 0
@@ -156,6 +188,10 @@ def msg_handler(call):
             bot.send_message(call.chat.id, 'Новый архим добавлен!',
                              reply_markup=ReplyKeyboardRemove())
             command_start(call)
+    else:
+        print(call.from_user.id)
+        for user_id in admins:
+            bot.send_message(user_id, f'@{call.from_user.username}: {call.text}')
 
 
 @bot.message_handler(content_types=['document'])
